@@ -51,7 +51,7 @@ export default function (props) {
 
     const submitAnswer = () => {
             axios({
-                url:`https://api.learnfi.online/api/v1/game/answer/check`,
+                url:`https://api.smartgm.it.com/api/v1/game/answer/check`,
                 method:'POST',
                 headers:{"Authorization":`Bearer ${localStorage.getItem('ACCESS_TOKEN')}`},
                 data : {

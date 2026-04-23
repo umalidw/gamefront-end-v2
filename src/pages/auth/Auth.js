@@ -61,7 +61,7 @@ export default function Auth (props) {
     let config = {
       method: "post",
       maxBodyLength: Infinity,
-      url: `https://api.learnfi.online/api/v1/oauth/token`,
+      url: `https://api.smartgm.it.com/api/v1/oauth/token`,
       headers: {
         Authorization: "Basic cGxheWVyOg==",
         "Content-Type": "multipart/form-data",
@@ -86,7 +86,7 @@ export default function Auth (props) {
   const SignUpHandler = () => {
     if (newUserName !== "" && newEmail !== "" && newPassword !== "") {
       axios({
-        url: `https://api.learnfi.online/api/v1/player/signup`,
+        url: `https://api.smartgm.it.com/api/v1/player/signup`,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         data: {

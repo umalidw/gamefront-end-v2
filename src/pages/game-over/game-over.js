@@ -13,7 +13,7 @@ export default function (props) {
     let sId = sessionStorage.getItem("SCORE_ID");
     let detailsId = sessionStorage.getItem("SCORE_DETAILS_ID");
     axios({
-      url: `https://api.learnfi.online/api/v1/game/end`,
+      url: `https://api.smartgm.it.com/api/v1/game/end`,
       method: "POST",
       headers: {
         Authorization: `Bearer ${localStorage.getItem("ACCESS_TOKEN")}`,
@@ -42,7 +42,7 @@ export default function (props) {
 
   const newGame = () => {
     axios({
-      url: "https://api.learnfi.online/api/v1/game/start",
+      url: "https://api.smartgm.it.com/api/v1/game/start",
       method: "POST",
       headers: {
         Authorization: `Bearer ${localStorage.getItem("ACCESS_TOKEN")}`,

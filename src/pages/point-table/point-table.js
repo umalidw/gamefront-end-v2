@@ -17,7 +17,7 @@ export default function (props) {
 
     const getTableData = () => {
         axios({
-            url: "https://api.learnfi.online/api/v1/game/top-score",
+            url: "https://api.smartgm.it.com/api/v1/game/top-score",
             method: "GET",
             headers: {
                 Authorization: `Bearer ${localStorage.getItem("ACCESS_TOKEN")}`,

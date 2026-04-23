@@ -16,7 +16,7 @@ export default function (props) {
         let uid = urlParams.get('uid')
         if(uid) {
             axios({
-                url: `https://api.learnfi.online/api/v1/player/account/verify?token=${uid}`,
+                url: `https://api.smartgm.it.com/api/v1/player/account/verify?token=${uid}`,
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
             }).then((response) => {
