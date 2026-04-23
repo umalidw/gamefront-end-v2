@@ -1,0 +1,291 @@
+name: Frontend CI/CD Pipeline
+
+on:
+  push:
+    branches: [prod, develop]
+  pull_request:
+    branches: [prod, develop]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Choose action to perform
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy
+          - destroy
+      environment:
+        description: Environment to target
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'deploy'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.15.1
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.15.1
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        env:
+          DISABLE_ESLINT_PLUGIN: true
+        run: npm run build
+
+      - name: Upload build artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smile-game-frontend-${{ github.sha }}
+          path: build
+          compression-level: 9
+          retention-days: 3
+
+  create-infrastructure:
+    name: Create Infrastructure
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: >
+      (github.event_name != 'pull_request') &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'deploy')
+    outputs:
+      cloudfront_id: ${{ steps.terraform.outputs.cloudfront_id }}
+      s3_bucket: ${{ steps.terraform.outputs.s3_bucket }}
+      environment: ${{ steps.terraform.outputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Initialize / Plan / Apply
+        working-directory: terraform
+        id: terraform
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ENV: ${{ github.event.inputs.environment }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ENVIRONMENT="$EVENT_ENV"
+          else
+            ENVIRONMENT="${{ github.ref == 'refs/heads/prod' && 'prod' || 'dev' }}"
+          fi
+
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            BUCKET_NAME="${{ secrets.S3_BUCKET_PROD }}"
+            CUSTOM_DOMAIN="${{ secrets.CUSTOM_DOMAIN_PROD }}"
+            ACM_CERT="${{ secrets.ACM_CERT_ARN_PROD }}"
+          else
+            BUCKET_NAME="${{ secrets.S3_BUCKET_DEV }}"
+            CUSTOM_DOMAIN="${{ secrets.CUSTOM_DOMAIN_DEV }}"
+            ACM_CERT="${{ secrets.ACM_CERT_ARN_DEV }}"
+          fi
+
+          terraform init
+          terraform workspace select "$ENVIRONMENT" || terraform workspace new "$ENVIRONMENT"
+
+          terraform plan \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="environment=$ENVIRONMENT" \
+            -var="bucket_name=$BUCKET_NAME" \
+            -var="custom_domain=$CUSTOM_DOMAIN" \
+            -var="acm_certificate_arn=$ACM_CERT"
+
+          terraform apply -auto-approve \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="environment=$ENVIRONMENT" \
+            -var="bucket_name=$BUCKET_NAME" \
+            -var="custom_domain=$CUSTOM_DOMAIN" \
+            -var="acm_certificate_arn=$ACM_CERT"
+
+          # Capture Terraform outputs with error handling
+          echo "Capturing Terraform outputs..."
+          CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id 2>/dev/null || echo "")
+          S3_BUCKET=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "")
+          
+          echo "CloudFront ID: $CLOUDFRONT_ID"
+          echo "S3 Bucket: $S3_BUCKET"
+          echo "Environment: $ENVIRONMENT"
+          
+          # Set outputs (empty strings are allowed)
+          echo "cloudfront_id=$CLOUDFRONT_ID" >> $GITHUB_OUTPUT
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          
+          # Verify outputs were set
+          if [ -z "$S3_BUCKET" ]; then
+            echo "Warning: S3 bucket name is empty from Terraform output"
+          fi
+
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    needs: [build-and-test, create-infrastructure]
+    if: >
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'deploy') &&
+      github.event_name != 'pull_request'
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: smile-game-frontend-${{ github.sha }}
+          path: build-output
+
+      - name: Debug infrastructure outputs
+        run: |
+          echo "CloudFront ID from job output: ${{ needs.create-infrastructure.outputs.cloudfront_id }}"
+          echo "S3 Bucket from job output: ${{ needs.create-infrastructure.outputs.s3_bucket }}"
+          echo "Environment from job output: ${{ needs.create-infrastructure.outputs.environment }}"
+          echo "GitHub ref: ${{ github.ref }}"
+          echo "GitHub event name: ${{ github.event_name }}"
+
+      - name: Sync build to S3 and invalidate CloudFront
+        env:
+          DISTRIBUTION_ID: ${{ needs.create-infrastructure.outputs.cloudfront_id }}
+          S3_BUCKET_PROD: ${{ secrets.S3_BUCKET_PROD }}
+          S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
+        run: |
+          # Determine environment
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref }}" = "refs/heads/prod" ]; then
+            ENVIRONMENT="prod"
+          else
+            ENVIRONMENT="dev"
+          fi
+          
+          # Get bucket name from secrets based on environment
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            BUCKET_NAME="$S3_BUCKET_PROD"
+          else
+            BUCKET_NAME="$S3_BUCKET_DEV"
+          fi
+          
+          # Fallback to Terraform output if secret is empty
+          if [ -z "$BUCKET_NAME" ]; then
+            echo "Warning: Bucket name from secret is empty, trying Terraform output"
+            BUCKET_NAME="${{ needs.create-infrastructure.outputs.s3_bucket }}"
+          fi
+          
+          echo "Environment: $ENVIRONMENT"
+          echo "Deploying to S3 bucket: $BUCKET_NAME"
+          
+          if [ -z "$BUCKET_NAME" ]; then
+            echo "Error: BUCKET_NAME is empty. Cannot deploy."
+            exit 1
+          fi
+          
+          aws s3 sync build-output/ s3://$BUCKET_NAME --delete
+
+          if [ -n "$DISTRIBUTION_ID" ]; then
+            echo "Invalidating CloudFront distribution: $DISTRIBUTION_ID"
+            aws cloudfront create-invalidation \
+              --distribution-id "$DISTRIBUTION_ID" \
+              --paths "/*"
+          else
+            echo "Warning: CloudFront distribution ID not found, skipping invalidation"
+          fi
+
+  destroy-infrastructure:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Destroy resources
+        working-directory: terraform
+        env:
+          TARGET_ENV: ${{ github.event.inputs.environment }}
+        run: |
+          if [ "$TARGET_ENV" = "prod" ]; then
+            BUCKET_NAME="${{ secrets.S3_BUCKET_PROD }}"
+            CUSTOM_DOMAIN="${{ secrets.CUSTOM_DOMAIN_PROD }}"
+            ACM_CERT="${{ secrets.ACM_CERT_ARN_PROD }}"
+          else
+            BUCKET_NAME="${{ secrets.S3_BUCKET_DEV }}"
+            CUSTOM_DOMAIN="${{ secrets.CUSTOM_DOMAIN_DEV }}"
+            ACM_CERT="${{ secrets.ACM_CERT_ARN_DEV }}"
+          fi
+
+          terraform init
+          terraform workspace select "$TARGET_ENV" || terraform workspace new "$TARGET_ENV"
+
+          terraform plan -destroy \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="environment=$TARGET_ENV" \
+            -var="bucket_name=$BUCKET_NAME" \
+            -var="custom_domain=$CUSTOM_DOMAIN" \
+            -var="acm_certificate_arn=$ACM_CERT"
+
+          terraform destroy -auto-approve \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="environment=$TARGET_ENV" \
+            -var="bucket_name=$BUCKET_NAME" \
+            -var="custom_domain=$CUSTOM_DOMAIN" \
+            -var="acm_certificate_arn=$ACM_CERT"
+
+  notify:
+    name: Notify Status
+    runs-on: ubuntu-latest
+    needs: [deploy-frontend, destroy-infrastructure]
+    if: always()
+    steps:
+      - name: Report success
+        if: success()
+        run: echo "Deployment successful"
+
+      - name: Report failure
+        if: failure()
+        run: echo "Deployment failed"
+
