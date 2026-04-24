@@ -11,7 +11,7 @@ bucket_name = "smile-game-frontend-prod-544719091850"
 
 
 
-# CloudFront Configurationsss
+# CloudFront Configurationssss
 enable_ipv6 = true
 price_class = "PriceClass_100" # Options: PriceClass_All, PriceClass_200, PriceClass_100
 
