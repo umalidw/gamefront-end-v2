@@ -11,7 +11,7 @@ terraform {
   # Remote state configuration
   backend "s3" {
     bucket = "sample-game-app-terraform-state-544719091850"
-    key    = "smile-game-frontend/terraform.tfstate"
+    key    = "sample-game-frontend/terraform.tfstate"
     region = "us-east-1"
   }
 }
