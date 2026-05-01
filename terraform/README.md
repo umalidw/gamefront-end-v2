@@ -1,4 +1,4 @@
-# Terraform Configuration for Smile Game Frontend
+# Terraform Configuration for Smile Game Frontendd
 
 This Terraform configuration deploys the Smile Game Frontend React application to AWS S3 and CloudFront CDN.
 
